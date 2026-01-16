@@ -43,9 +43,24 @@
             font-size: 18px;
             min-height: 24px;
         }
+        #sound-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #333;
+            color: #888;
+            border: 1px solid #555;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        #sound-btn:hover { background: #444; }
+        #sound-btn.on { color: #4ecdc4; border-color: #4ecdc4; }
     </style>
 </head>
 <body>
+    <button id="sound-btn">Sound: OFF</button>
     <div id="game-container">
         <h1>PLUTO</h1>
         <div id="message"></div>
@@ -65,7 +80,7 @@
             gravity: 0.25,
             friction: 0.98,
             bounce: 0.4,
-            pourRate: 8, // particles per frame
+            pourRate: 8,
             // Scoop spring physics
             scoopSpring: 0.08,
             scoopDamping: 0.85,
@@ -87,6 +102,107 @@
         const roundEl = document.getElementById('round');
         const countEl = document.getElementById('count');
         const messageEl = document.getElementById('message');
+        const soundBtn = document.getElementById('sound-btn');
+
+        // === WEB AUDIO ===
+        let audioCtx = null;
+        let soundEnabled = false;
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        function playSound(type) {
+            if (!soundEnabled || !audioCtx) return;
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+
+            switch(type) {
+                case 'pour':
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(200 + Math.random() * 100, now);
+                    gain.gain.setValueAtTime(0.05, now);
+                    gain.gain.exponentialDecayTo(0.001, now + 0.05);
+                    osc.start(now);
+                    osc.stop(now + 0.05);
+                    break;
+
+                case 'collect':
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(523, now); // C5
+                    osc.frequency.setValueAtTime(659, now + 0.1); // E5
+                    osc.frequency.setValueAtTime(784, now + 0.2); // G5
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.exponentialDecayTo(0.001, now + 0.4);
+                    osc.start(now);
+                    osc.stop(now + 0.4);
+                    break;
+
+                case 'bomb':
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(150, now);
+                    osc.frequency.exponentialRampToValueAtTime(30, now + 0.3);
+                    gain.gain.setValueAtTime(0.4, now);
+                    gain.gain.exponentialDecayTo(0.001, now + 0.3);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                    // Add noise burst
+                    const noise = audioCtx.createOscillator();
+                    const noiseGain = audioCtx.createGain();
+                    noise.type = 'square';
+                    noise.frequency.setValueAtTime(80, now);
+                    noise.connect(noiseGain);
+                    noiseGain.connect(audioCtx.destination);
+                    noiseGain.gain.setValueAtTime(0.2, now);
+                    noiseGain.gain.exponentialDecayTo(0.001, now + 0.2);
+                    noise.start(now);
+                    noise.stop(now + 0.2);
+                    break;
+
+                case 'scoop':
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(300 + Math.random() * 50, now);
+                    gain.gain.setValueAtTime(0.1, now);
+                    gain.gain.exponentialDecayTo(0.001, now + 0.1);
+                    osc.start(now);
+                    osc.stop(now + 0.1);
+                    break;
+
+                case 'round':
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(440, now);
+                    osc.frequency.setValueAtTime(554, now + 0.15);
+                    osc.frequency.setValueAtTime(659, now + 0.3);
+                    osc.frequency.setValueAtTime(880, now + 0.45);
+                    gain.gain.setValueAtTime(0.2, now);
+                    gain.gain.setValueAtTime(0.2, now + 0.5);
+                    gain.gain.exponentialDecayTo(0.001, now + 0.8);
+                    osc.start(now);
+                    osc.stop(now + 0.8);
+                    break;
+            }
+        }
+
+        // Polyfill for exponentialDecayTo
+        GainNode.prototype.gain.exponentialDecayTo = function(value, endTime) {
+            this.exponentialRampToValueAtTime(Math.max(value, 0.001), endTime);
+        };
+
+        soundBtn.addEventListener('click', () => {
+            initAudio();
+            soundEnabled = !soundEnabled;
+            soundBtn.textContent = `Sound: ${soundEnabled ? 'ON' : 'OFF'}`;
+            soundBtn.classList.toggle('on', soundEnabled);
+            if (soundEnabled && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        });
 
         // === PARTICLE CLASS ===
         class Particle {
@@ -97,7 +213,6 @@
                 this.vy = 0;
                 this.radius = CONFIG.particleRadius + Math.random() * 2;
                 this.active = true;
-                // Earth tones
                 const hue = 25 + Math.random() * 25;
                 const sat = 35 + Math.random() * 25;
                 const lit = 25 + Math.random() * 20;
@@ -107,25 +222,18 @@
             update(scoop) {
                 if (!this.active) return;
 
-                // Gravity
                 this.vy += CONFIG.gravity;
 
-                // Scoop collision (arc shape)
+                // Scoop collision
                 if (scoop.holding) {
                     const dx = this.x - scoop.x;
                     const dy = this.y - scoop.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
 
-                    // Inside scoop bowl
                     if (dist < CONFIG.scoopRadius && dist > CONFIG.scoopRadius - 15) {
                         const angle = Math.atan2(dy, dx);
-                        const scoopAngle = scoop.angle;
-                        const halfOpen = CONFIG.scoopOpenAngle / 2;
-
-                        // Check if within scoop arc (not the open part)
-                        const relAngle = ((angle - scoopAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-                        if (Math.abs(relAngle) > halfOpen) {
-                            // Push out of scoop wall
+                        const relAngle = ((angle - scoop.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                        if (Math.abs(relAngle) > CONFIG.scoopOpenAngle / 2) {
                             const pushDist = CONFIG.scoopRadius - dist;
                             this.x += (dx / dist) * pushDist * 0.5;
                             this.y += (dy / dist) * pushDist * 0.5;
@@ -133,29 +241,26 @@
                             this.vy += (dy / dist) * 0.5;
                         }
                     }
+
+                    // Carried by scoop (inside bowl)
+                    if (dist < CONFIG.scoopRadius - 10) {
+                        this.vx += scoop.vx * 0.4;
+                        this.vy += scoop.vy * 0.4;
+                    }
                 }
 
-                // Apply velocity
                 this.x += this.vx;
                 this.y += this.vy;
-
-                // Friction
                 this.vx *= CONFIG.friction;
                 this.vy *= CONFIG.friction;
 
-                // Bounds collision
-                if (this.x < this.radius) {
-                    this.x = this.radius;
-                    this.vx *= -CONFIG.bounce;
-                }
-                if (this.x > canvas.width - this.radius) {
-                    this.x = canvas.width - this.radius;
-                    this.vx *= -CONFIG.bounce;
-                }
+                // Bounds
+                if (this.x < this.radius) { this.x = this.radius; this.vx *= -CONFIG.bounce; }
+                if (this.x > canvas.width - this.radius) { this.x = canvas.width - this.radius; this.vx *= -CONFIG.bounce; }
                 if (this.y > canvas.height - this.radius) {
                     this.y = canvas.height - this.radius;
                     this.vy *= -CONFIG.bounce;
-                    this.vx *= 0.9; // Floor friction
+                    this.vx *= 0.9;
                 }
             }
 
@@ -171,7 +276,7 @@
         // === ITEM CLASS ===
         class Item {
             constructor(type) {
-                this.type = type; // 'gem' or 'bomb'
+                this.type = type;
                 this.x = 100 + Math.random() * 400;
                 this.y = -20 - Math.random() * 100;
                 this.vx = (Math.random() - 0.5) * 2;
@@ -179,6 +284,7 @@
                 this.radius = type === 'gem' ? 10 : 12;
                 this.active = true;
                 this.collected = false;
+                this.inScoop = false;
 
                 if (type === 'gem') {
                     const gems = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3'];
@@ -190,10 +296,50 @@
                 }
             }
 
-            update() {
+            update(scoop) {
                 if (!this.active) return;
 
                 this.vy += CONFIG.gravity;
+
+                // Scoop interaction - items get carried!
+                if (scoop.holding) {
+                    const dx = this.x - scoop.x;
+                    const dy = this.y - scoop.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    // Check if inside scoop bowl
+                    if (dist < CONFIG.scoopRadius - 5) {
+                        const angle = Math.atan2(dy, dx);
+                        const relAngle = ((angle - scoop.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+
+                        // Inside the bowl (not through the opening)
+                        if (Math.abs(relAngle) > CONFIG.scoopOpenAngle / 2 || dist < CONFIG.scoopRadius - 20) {
+                            // Strongly follow scoop
+                            this.vx += scoop.vx * 0.6;
+                            this.vy += scoop.vy * 0.6;
+                            this.inScoop = true;
+
+                            // Play scoop sound occasionally
+                            if (Math.random() < 0.02) playSound('scoop');
+                        }
+                    }
+
+                    // Collision with scoop edge
+                    if (dist < CONFIG.scoopRadius && dist > CONFIG.scoopRadius - 15) {
+                        const angle = Math.atan2(dy, dx);
+                        const relAngle = ((angle - scoop.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                        if (Math.abs(relAngle) > CONFIG.scoopOpenAngle / 2) {
+                            const pushDist = CONFIG.scoopRadius - dist;
+                            this.x += (dx / dist) * pushDist * 0.7;
+                            this.y += (dy / dist) * pushDist * 0.7;
+                            this.vx += (dx / dist) * 0.8;
+                            this.vy += (dy / dist) * 0.8;
+                        }
+                    }
+                } else {
+                    this.inScoop = false;
+                }
+
                 this.x += this.vx;
                 this.y += this.vy;
                 this.vx *= CONFIG.friction;
@@ -212,9 +358,16 @@
             draw() {
                 if (!this.active) return;
 
+                // Glow when in scoop
+                if (this.inScoop) {
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius + 5, 0, Math.PI * 2);
+                    ctx.fillStyle = this.type === 'gem' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 0, 0, 0.2)';
+                    ctx.fill();
+                }
+
                 ctx.beginPath();
                 if (this.type === 'gem') {
-                    // Diamond shape
                     ctx.moveTo(this.x, this.y - this.radius);
                     ctx.lineTo(this.x + this.radius, this.y);
                     ctx.lineTo(this.x, this.y + this.radius);
@@ -226,18 +379,15 @@
                     ctx.lineWidth = 2;
                     ctx.stroke();
                 } else {
-                    // Bomb circle
                     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
                     ctx.fillStyle = this.color;
                     ctx.fill();
-                    // Fuse
                     ctx.beginPath();
                     ctx.moveTo(this.x, this.y - this.radius);
                     ctx.lineTo(this.x + 5, this.y - this.radius - 8);
                     ctx.strokeStyle = '#8b4513';
                     ctx.lineWidth = 3;
                     ctx.stroke();
-                    // Spark
                     ctx.beginPath();
                     ctx.arc(this.x + 5, this.y - this.radius - 10, 3, 0, Math.PI * 2);
                     ctx.fillStyle = '#ff6600';
@@ -246,16 +396,17 @@
             }
 
             checkTray() {
-                if (!this.active || this.collected) return false;
+                if (!this.active || this.collected) return null;
                 const trayX = canvas.width / 2;
                 const inTray = this.y > CONFIG.trayY - 10 &&
                               this.x > trayX - CONFIG.trayWidth / 2 &&
                               this.x < trayX + CONFIG.trayWidth / 2;
                 if (inTray) {
                     this.collected = true;
-                    return true;
+                    this.active = false;
+                    return this.type;
                 }
-                return false;
+                return null;
             }
         }
 
@@ -266,7 +417,7 @@
                 this.y = canvas.height / 2;
                 this.vx = 0;
                 this.vy = 0;
-                this.angle = -Math.PI / 2; // Points up
+                this.angle = -Math.PI / 2;
                 this.holding = false;
             }
 
@@ -274,20 +425,17 @@
                 this.holding = isHolding;
 
                 if (isHolding) {
-                    // Spring physics toward target
                     const dx = targetX - this.x;
                     const dy = targetY - this.y;
 
                     this.vx += dx * CONFIG.scoopSpring;
                     this.vy += dy * CONFIG.scoopSpring;
-
                     this.vx *= CONFIG.scoopDamping;
                     this.vy *= CONFIG.scoopDamping;
 
                     this.x += this.vx;
                     this.y += this.vy;
 
-                    // Rotate toward movement
                     if (Math.abs(this.vx) > 0.5 || Math.abs(this.vy) > 0.5) {
                         const targetAngle = Math.atan2(this.vy, this.vx) + Math.PI / 2;
                         const angleDiff = ((targetAngle - this.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
@@ -303,7 +451,6 @@
                 ctx.translate(this.x, this.y);
                 ctx.rotate(this.angle);
 
-                // Draw scoop arc
                 ctx.beginPath();
                 const startAngle = CONFIG.scoopOpenAngle / 2;
                 const endAngle = Math.PI * 2 - CONFIG.scoopOpenAngle / 2;
@@ -313,7 +460,6 @@
                 ctx.lineCap = 'round';
                 ctx.stroke();
 
-                // Inner line
                 ctx.beginPath();
                 ctx.arc(0, 0, CONFIG.scoopRadius - 4, startAngle, endAngle);
                 ctx.strokeStyle = '#A0896C';
@@ -322,7 +468,6 @@
 
                 ctx.restore();
 
-                // Draw spring line to anchor
                 ctx.beginPath();
                 ctx.moveTo(this.x, this.y);
                 ctx.lineTo(canvas.width / 2, 20);
@@ -332,23 +477,49 @@
                 ctx.stroke();
                 ctx.setLineDash([]);
             }
+        }
 
-            pushParticles(particles) {
-                if (!this.holding) return;
+        // === EXPLOSION EFFECT ===
+        let explosions = [];
 
-                for (const p of particles) {
-                    if (!p.active) continue;
+        class Explosion {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.particles = [];
+                for (let i = 0; i < 20; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = 3 + Math.random() * 5;
+                    this.particles.push({
+                        x: x,
+                        y: y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 1,
+                        color: Math.random() > 0.5 ? '#ff6600' : '#ffaa00'
+                    });
+                }
+            }
 
-                    const dx = p.x - this.x;
-                    const dy = p.y - this.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
+            update() {
+                for (const p of this.particles) {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.vy += 0.1;
+                    p.life -= 0.03;
+                }
+                this.particles = this.particles.filter(p => p.life > 0);
+                return this.particles.length > 0;
+            }
 
-                    // Scoop catches particles inside
-                    if (dist < CONFIG.scoopRadius - 5) {
-                        // Add scoop velocity to particle
-                        p.vx += this.vx * 0.3;
-                        p.vy += this.vy * 0.3;
-                    }
+            draw() {
+                for (const p of this.particles) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 4 * p.life, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color;
+                    ctx.globalAlpha = p.life;
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
                 }
             }
         }
@@ -365,17 +536,18 @@
             pouredCount: 0,
             roundActive: true,
             message: '',
-            messageTimer: 0
+            messageTimer: 0,
+            lastPourSound: 0
         };
 
         // === INIT ROUND ===
         function initRound() {
             particles = [];
             items = [];
+            explosions = [];
             gameState.pouredCount = 0;
             gameState.roundActive = true;
 
-            // Create items
             for (let i = 0; i < CONFIG.gemsPerRound; i++) {
                 items.push(new Item('gem'));
             }
@@ -384,6 +556,7 @@
             }
 
             showMessage(`Round ${gameState.round} - Find the gems!`);
+            playSound('round');
         }
 
         // === POUR PARTICLES ===
@@ -393,9 +566,14 @@
             const toPour = Math.min(CONFIG.pourRate, CONFIG.maxParticles - gameState.pouredCount);
             for (let i = 0; i < toPour; i++) {
                 const x = canvas.width / 2 + (Math.random() - 0.5) * 60;
-                const y = -10;
-                particles.push(new Particle(x, y));
+                particles.push(new Particle(x, -10));
                 gameState.pouredCount++;
+            }
+
+            // Pour sound (throttled)
+            if (Date.now() - gameState.lastPourSound > 100) {
+                playSound('pour');
+                gameState.lastPourSound = Date.now();
             }
         }
 
@@ -445,8 +623,6 @@
             ctx.strokeStyle = '#6a6a8a';
             ctx.lineWidth = 2;
             ctx.strokeRect(x - CONFIG.trayWidth / 2, CONFIG.trayY, CONFIG.trayWidth, CONFIG.trayHeight);
-
-            // Label
             ctx.fillStyle = '#888';
             ctx.font = '12px system-ui';
             ctx.textAlign = 'center';
@@ -476,27 +652,29 @@
         function checkRoundEnd() {
             if (!gameState.roundActive) return;
 
-            const activeItems = items.filter(i => i.active && !i.collected);
             const collectedGems = items.filter(i => i.type === 'gem' && i.collected);
             const collectedBombs = items.filter(i => i.type === 'bomb' && i.collected);
 
-            // All gems collected OR bomb collected
             if (collectedGems.length === CONFIG.gemsPerRound || collectedBombs.length > 0) {
                 gameState.roundActive = false;
 
-                // Calculate score
                 const gemPoints = collectedGems.length * 100;
                 const bombPenalty = collectedBombs.length * 50;
-                const roundScore = gemPoints - bombPenalty;
-                gameState.score += roundScore;
+                gameState.score += gemPoints - bombPenalty;
 
                 if (collectedBombs.length > 0) {
                     showMessage(`BOOM! -50 points`, 2000);
+                    playSound('bomb');
+                    // Create explosion at bomb location
+                    const bomb = items.find(i => i.type === 'bomb' && i.collected);
+                    if (bomb) {
+                        explosions.push(new Explosion(canvas.width / 2, CONFIG.trayY));
+                    }
                 } else {
                     showMessage(`+${gemPoints} points!`, 2000);
+                    playSound('collect');
                 }
 
-                // Next round after delay
                 setTimeout(() => {
                     if (gameState.round < gameState.maxRounds) {
                         gameState.round++;
@@ -510,37 +688,35 @@
 
         // === GAME LOOP ===
         function gameLoop() {
-            // Clear
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Pour particles
             if (gameState.roundActive) {
                 pourParticles();
             }
 
-            // Update scoop
             scoop.update(mouse.x, mouse.y, mouse.down);
-            scoop.pushParticles(particles);
 
-            // Update particles
             for (const p of particles) {
                 p.update(scoop);
             }
             resolveCollisions();
 
-            // Update items
             for (const item of items) {
-                item.update();
-                if (item.checkTray()) {
-                    // Item dropped in tray
+                item.update(scoop);
+                const collected = item.checkTray();
+                if (collected === 'gem') {
+                    playSound('collect');
+                } else if (collected === 'bomb') {
+                    explosions.push(new Explosion(item.x, item.y));
                 }
             }
 
-            // Check round
+            // Update explosions
+            explosions = explosions.filter(e => e.update());
+
             checkRoundEnd();
 
-            // Draw
             drawSpout();
             drawTray();
 
@@ -550,15 +726,16 @@
             for (const item of items) {
                 item.draw();
             }
+            for (const e of explosions) {
+                e.draw();
+            }
 
             scoop.draw();
 
-            // UI
             scoreEl.textContent = gameState.score;
             roundEl.textContent = gameState.round;
             countEl.textContent = particles.filter(p => p.active).length;
 
-            // Message
             if (gameState.messageTimer > 0) {
                 messageEl.textContent = gameState.message;
                 gameState.messageTimer -= 16;
@@ -586,9 +763,9 @@
         canvas.addEventListener('mouseup', () => mouse.down = false);
         canvas.addEventListener('mouseleave', () => mouse.down = false);
 
-        // Touch support
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
+            initAudio(); // Init audio on first touch
             const rect = canvas.getBoundingClientRect();
             const touch = e.touches[0];
             mouse.x = touch.clientX - rect.left;
