@@ -30,35 +30,63 @@
             border-radius: 8px;
             cursor: crosshair;
         }
-        #info {
+        #ui {
+            display: flex;
+            gap: 30px;
             color: #888;
             font-size: 14px;
+        }
+        .score { color: #ffd700; }
+        .round { color: #88f; }
+        #message {
+            color: #fff;
+            font-size: 18px;
+            min-height: 24px;
         }
     </style>
 </head>
 <body>
     <div id="game-container">
         <h1>PLUTO</h1>
+        <div id="message"></div>
         <canvas id="game" width="600" height="400"></canvas>
-        <div id="info">Click and drag to dig | Particles: <span id="count">0</span></div>
+        <div id="ui">
+            <span>Score: <span class="score" id="score">0</span></span>
+            <span>Round: <span class="round" id="round">1</span>/5</span>
+            <span>Particles: <span id="count">0</span></span>
+        </div>
     </div>
 
     <script>
         // === CONFIG ===
         const CONFIG = {
-            particleCount: 300,
+            maxParticles: 400,
             particleRadius: 4,
-            gravity: 0.3,
-            friction: 0.99,
-            bounce: 0.5,
-            digRadius: 30,
-            digStrength: 2
+            gravity: 0.25,
+            friction: 0.98,
+            bounce: 0.4,
+            pourRate: 8, // particles per frame
+            // Scoop spring physics
+            scoopSpring: 0.08,
+            scoopDamping: 0.85,
+            scoopRadius: 35,
+            scoopOpenAngle: Math.PI * 0.7,
+            // Items
+            gemsPerRound: 3,
+            bombsPerRound: 1,
+            // Zones
+            trayY: 360,
+            trayWidth: 120,
+            trayHeight: 30
         };
 
         // === SETUP ===
         const canvas = document.getElementById('game');
         const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const roundEl = document.getElementById('round');
         const countEl = document.getElementById('count');
+        const messageEl = document.getElementById('message');
 
         // === PARTICLE CLASS ===
         class Particle {
@@ -68,16 +96,44 @@
                 this.vx = (Math.random() - 0.5) * 2;
                 this.vy = 0;
                 this.radius = CONFIG.particleRadius + Math.random() * 2;
+                this.active = true;
                 // Earth tones
-                const hue = 30 + Math.random() * 20;
-                const sat = 40 + Math.random() * 20;
-                const lit = 30 + Math.random() * 20;
+                const hue = 25 + Math.random() * 25;
+                const sat = 35 + Math.random() * 25;
+                const lit = 25 + Math.random() * 20;
                 this.color = `hsl(${hue}, ${sat}%, ${lit}%)`;
             }
 
-            update() {
+            update(scoop) {
+                if (!this.active) return;
+
                 // Gravity
                 this.vy += CONFIG.gravity;
+
+                // Scoop collision (arc shape)
+                if (scoop.holding) {
+                    const dx = this.x - scoop.x;
+                    const dy = this.y - scoop.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    // Inside scoop bowl
+                    if (dist < CONFIG.scoopRadius && dist > CONFIG.scoopRadius - 15) {
+                        const angle = Math.atan2(dy, dx);
+                        const scoopAngle = scoop.angle;
+                        const halfOpen = CONFIG.scoopOpenAngle / 2;
+
+                        // Check if within scoop arc (not the open part)
+                        const relAngle = ((angle - scoopAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                        if (Math.abs(relAngle) > halfOpen) {
+                            // Push out of scoop wall
+                            const pushDist = CONFIG.scoopRadius - dist;
+                            this.x += (dx / dist) * pushDist * 0.5;
+                            this.y += (dy / dist) * pushDist * 0.5;
+                            this.vx += (dx / dist) * 0.5;
+                            this.vy += (dy / dist) * 0.5;
+                        }
+                    }
+                }
 
                 // Apply velocity
                 this.x += this.vx;
@@ -99,10 +155,12 @@
                 if (this.y > canvas.height - this.radius) {
                     this.y = canvas.height - this.radius;
                     this.vy *= -CONFIG.bounce;
+                    this.vx *= 0.9; // Floor friction
                 }
             }
 
             draw() {
+                if (!this.active) return;
                 ctx.beginPath();
                 ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
                 ctx.fillStyle = this.color;
@@ -110,43 +168,244 @@
             }
         }
 
-        // === GAME STATE ===
-        let particles = [];
-        let mouse = { x: 0, y: 0, down: false };
+        // === ITEM CLASS ===
+        class Item {
+            constructor(type) {
+                this.type = type; // 'gem' or 'bomb'
+                this.x = 100 + Math.random() * 400;
+                this.y = -20 - Math.random() * 100;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = 0;
+                this.radius = type === 'gem' ? 10 : 12;
+                this.active = true;
+                this.collected = false;
 
-        // === INIT PARTICLES ===
-        function initParticles() {
-            particles = [];
-            for (let i = 0; i < CONFIG.particleCount; i++) {
-                const x = Math.random() * canvas.width;
-                const y = Math.random() * canvas.height * 0.6; // Top 60%
-                particles.push(new Particle(x, y));
+                if (type === 'gem') {
+                    const gems = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3'];
+                    this.color = gems[Math.floor(Math.random() * gems.length)];
+                    this.points = 100;
+                } else {
+                    this.color = '#333';
+                    this.points = -50;
+                }
+            }
+
+            update() {
+                if (!this.active) return;
+
+                this.vy += CONFIG.gravity;
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vx *= CONFIG.friction;
+                this.vy *= CONFIG.friction;
+
+                // Bounds
+                if (this.x < this.radius) { this.x = this.radius; this.vx *= -CONFIG.bounce; }
+                if (this.x > canvas.width - this.radius) { this.x = canvas.width - this.radius; this.vx *= -CONFIG.bounce; }
+                if (this.y > canvas.height - this.radius) {
+                    this.y = canvas.height - this.radius;
+                    this.vy *= -CONFIG.bounce;
+                    this.vx *= 0.9;
+                }
+            }
+
+            draw() {
+                if (!this.active) return;
+
+                ctx.beginPath();
+                if (this.type === 'gem') {
+                    // Diamond shape
+                    ctx.moveTo(this.x, this.y - this.radius);
+                    ctx.lineTo(this.x + this.radius, this.y);
+                    ctx.lineTo(this.x, this.y + this.radius);
+                    ctx.lineTo(this.x - this.radius, this.y);
+                    ctx.closePath();
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                } else {
+                    // Bomb circle
+                    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    // Fuse
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y - this.radius);
+                    ctx.lineTo(this.x + 5, this.y - this.radius - 8);
+                    ctx.strokeStyle = '#8b4513';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    // Spark
+                    ctx.beginPath();
+                    ctx.arc(this.x + 5, this.y - this.radius - 10, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = '#ff6600';
+                    ctx.fill();
+                }
+            }
+
+            checkTray() {
+                if (!this.active || this.collected) return false;
+                const trayX = canvas.width / 2;
+                const inTray = this.y > CONFIG.trayY - 10 &&
+                              this.x > trayX - CONFIG.trayWidth / 2 &&
+                              this.x < trayX + CONFIG.trayWidth / 2;
+                if (inTray) {
+                    this.collected = true;
+                    return true;
+                }
+                return false;
             }
         }
 
-        // === DIG INTERACTION ===
-        function dig() {
-            if (!mouse.down) return;
+        // === SCOOP CLASS ===
+        class Scoop {
+            constructor() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.vx = 0;
+                this.vy = 0;
+                this.angle = -Math.PI / 2; // Points up
+                this.holding = false;
+            }
 
-            for (const p of particles) {
-                const dx = p.x - mouse.x;
-                const dy = p.y - mouse.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
+            update(targetX, targetY, isHolding) {
+                this.holding = isHolding;
 
-                if (dist < CONFIG.digRadius && dist > 0) {
-                    const force = (CONFIG.digRadius - dist) / CONFIG.digRadius * CONFIG.digStrength;
-                    p.vx += (dx / dist) * force;
-                    p.vy += (dy / dist) * force;
+                if (isHolding) {
+                    // Spring physics toward target
+                    const dx = targetX - this.x;
+                    const dy = targetY - this.y;
+
+                    this.vx += dx * CONFIG.scoopSpring;
+                    this.vy += dy * CONFIG.scoopSpring;
+
+                    this.vx *= CONFIG.scoopDamping;
+                    this.vy *= CONFIG.scoopDamping;
+
+                    this.x += this.vx;
+                    this.y += this.vy;
+
+                    // Rotate toward movement
+                    if (Math.abs(this.vx) > 0.5 || Math.abs(this.vy) > 0.5) {
+                        const targetAngle = Math.atan2(this.vy, this.vx) + Math.PI / 2;
+                        const angleDiff = ((targetAngle - this.angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                        this.angle += angleDiff * 0.1;
+                    }
+                }
+            }
+
+            draw() {
+                if (!this.holding) return;
+
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                // Draw scoop arc
+                ctx.beginPath();
+                const startAngle = CONFIG.scoopOpenAngle / 2;
+                const endAngle = Math.PI * 2 - CONFIG.scoopOpenAngle / 2;
+                ctx.arc(0, 0, CONFIG.scoopRadius, startAngle, endAngle);
+                ctx.strokeStyle = '#8B7355';
+                ctx.lineWidth = 8;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+
+                // Inner line
+                ctx.beginPath();
+                ctx.arc(0, 0, CONFIG.scoopRadius - 4, startAngle, endAngle);
+                ctx.strokeStyle = '#A0896C';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                ctx.restore();
+
+                // Draw spring line to anchor
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(canvas.width / 2, 20);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            pushParticles(particles) {
+                if (!this.holding) return;
+
+                for (const p of particles) {
+                    if (!p.active) continue;
+
+                    const dx = p.x - this.x;
+                    const dy = p.y - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    // Scoop catches particles inside
+                    if (dist < CONFIG.scoopRadius - 5) {
+                        // Add scoop velocity to particle
+                        p.vx += this.vx * 0.3;
+                        p.vy += this.vy * 0.3;
+                    }
                 }
             }
         }
 
-        // === PARTICLE-PARTICLE COLLISION (simple) ===
+        // === GAME STATE ===
+        let particles = [];
+        let items = [];
+        let scoop = new Scoop();
+        let mouse = { x: canvas.width / 2, y: canvas.height / 2, down: false };
+        let gameState = {
+            score: 0,
+            round: 1,
+            maxRounds: 5,
+            pouredCount: 0,
+            roundActive: true,
+            message: '',
+            messageTimer: 0
+        };
+
+        // === INIT ROUND ===
+        function initRound() {
+            particles = [];
+            items = [];
+            gameState.pouredCount = 0;
+            gameState.roundActive = true;
+
+            // Create items
+            for (let i = 0; i < CONFIG.gemsPerRound; i++) {
+                items.push(new Item('gem'));
+            }
+            for (let i = 0; i < CONFIG.bombsPerRound; i++) {
+                items.push(new Item('bomb'));
+            }
+
+            showMessage(`Round ${gameState.round} - Find the gems!`);
+        }
+
+        // === POUR PARTICLES ===
+        function pourParticles() {
+            if (gameState.pouredCount >= CONFIG.maxParticles) return;
+
+            const toPour = Math.min(CONFIG.pourRate, CONFIG.maxParticles - gameState.pouredCount);
+            for (let i = 0; i < toPour; i++) {
+                const x = canvas.width / 2 + (Math.random() - 0.5) * 60;
+                const y = -10;
+                particles.push(new Particle(x, y));
+                gameState.pouredCount++;
+            }
+        }
+
+        // === COLLISION ===
         function resolveCollisions() {
-            for (let i = 0; i < particles.length; i++) {
-                for (let j = i + 1; j < particles.length; j++) {
-                    const a = particles[i];
-                    const b = particles[j];
+            const active = particles.filter(p => p.active);
+            for (let i = 0; i < active.length; i++) {
+                for (let j = i + 1; j < active.length; j++) {
+                    const a = active[i];
+                    const b = active[j];
 
                     const dx = b.x - a.x;
                     const dy = b.y - a.y;
@@ -154,7 +413,6 @@
                     const minDist = a.radius + b.radius;
 
                     if (dist < minDist && dist > 0) {
-                        // Push apart
                         const overlap = (minDist - dist) / 2;
                         const nx = dx / dist;
                         const ny = dy / dist;
@@ -164,7 +422,6 @@
                         b.x += nx * overlap;
                         b.y += ny * overlap;
 
-                        // Transfer velocity (simple)
                         const dvx = a.vx - b.vx;
                         const dvy = a.vy - b.vy;
                         const dvn = dvx * nx + dvy * ny;
@@ -180,14 +437,74 @@
             }
         }
 
-        // === DRAW DIG CURSOR ===
-        function drawCursor() {
-            if (mouse.down) {
-                ctx.beginPath();
-                ctx.arc(mouse.x, mouse.y, CONFIG.digRadius, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+        // === DRAW TRAY ===
+        function drawTray() {
+            const x = canvas.width / 2;
+            ctx.fillStyle = '#4a4a6a';
+            ctx.fillRect(x - CONFIG.trayWidth / 2, CONFIG.trayY, CONFIG.trayWidth, CONFIG.trayHeight);
+            ctx.strokeStyle = '#6a6a8a';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x - CONFIG.trayWidth / 2, CONFIG.trayY, CONFIG.trayWidth, CONFIG.trayHeight);
+
+            // Label
+            ctx.fillStyle = '#888';
+            ctx.font = '12px system-ui';
+            ctx.textAlign = 'center';
+            ctx.fillText('DROP HERE', x, CONFIG.trayY + 20);
+        }
+
+        // === DRAW SPOUT ===
+        function drawSpout() {
+            const x = canvas.width / 2;
+            ctx.fillStyle = '#5a5a7a';
+            ctx.beginPath();
+            ctx.moveTo(x - 30, 0);
+            ctx.lineTo(x + 30, 0);
+            ctx.lineTo(x + 15, 30);
+            ctx.lineTo(x - 15, 30);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // === MESSAGE ===
+        function showMessage(msg, duration = 2000) {
+            gameState.message = msg;
+            gameState.messageTimer = duration;
+        }
+
+        // === CHECK ROUND END ===
+        function checkRoundEnd() {
+            if (!gameState.roundActive) return;
+
+            const activeItems = items.filter(i => i.active && !i.collected);
+            const collectedGems = items.filter(i => i.type === 'gem' && i.collected);
+            const collectedBombs = items.filter(i => i.type === 'bomb' && i.collected);
+
+            // All gems collected OR bomb collected
+            if (collectedGems.length === CONFIG.gemsPerRound || collectedBombs.length > 0) {
+                gameState.roundActive = false;
+
+                // Calculate score
+                const gemPoints = collectedGems.length * 100;
+                const bombPenalty = collectedBombs.length * 50;
+                const roundScore = gemPoints - bombPenalty;
+                gameState.score += roundScore;
+
+                if (collectedBombs.length > 0) {
+                    showMessage(`BOOM! -50 points`, 2000);
+                } else {
+                    showMessage(`+${gemPoints} points!`, 2000);
+                }
+
+                // Next round after delay
+                setTimeout(() => {
+                    if (gameState.round < gameState.maxRounds) {
+                        gameState.round++;
+                        initRound();
+                    } else {
+                        showMessage(`Game Over! Final Score: ${gameState.score}`, 5000);
+                    }
+                }, 2500);
             }
         }
 
@@ -197,23 +514,57 @@
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Dig
-            dig();
+            // Pour particles
+            if (gameState.roundActive) {
+                pourParticles();
+            }
 
-            // Update & collide
+            // Update scoop
+            scoop.update(mouse.x, mouse.y, mouse.down);
+            scoop.pushParticles(particles);
+
+            // Update particles
             for (const p of particles) {
-                p.update();
+                p.update(scoop);
             }
             resolveCollisions();
 
+            // Update items
+            for (const item of items) {
+                item.update();
+                if (item.checkTray()) {
+                    // Item dropped in tray
+                }
+            }
+
+            // Check round
+            checkRoundEnd();
+
             // Draw
+            drawSpout();
+            drawTray();
+
             for (const p of particles) {
                 p.draw();
             }
-            drawCursor();
+            for (const item of items) {
+                item.draw();
+            }
+
+            scoop.draw();
 
             // UI
-            countEl.textContent = particles.length;
+            scoreEl.textContent = gameState.score;
+            roundEl.textContent = gameState.round;
+            countEl.textContent = particles.filter(p => p.active).length;
+
+            // Message
+            if (gameState.messageTimer > 0) {
+                messageEl.textContent = gameState.message;
+                gameState.messageTimer -= 16;
+            } else {
+                messageEl.textContent = '';
+            }
 
             requestAnimationFrame(gameLoop);
         }
@@ -256,7 +607,7 @@
         canvas.addEventListener('touchend', () => mouse.down = false);
 
         // === START ===
-        initParticles();
+        initRound();
         gameLoop();
     </script>
 </body>
