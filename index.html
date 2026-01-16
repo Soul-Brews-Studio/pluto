@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pluto - Dig for Riches</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: system-ui, sans-serif;
+        }
+        #game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        h1 {
+            color: #eee;
+            font-size: 24px;
+            letter-spacing: 4px;
+        }
+        canvas {
+            border: 2px solid #4a4a6a;
+            border-radius: 8px;
+            cursor: crosshair;
+        }
+        #info {
+            color: #888;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <h1>PLUTO</h1>
+        <canvas id="game" width="600" height="400"></canvas>
+        <div id="info">Click and drag to dig | Particles: <span id="count">0</span></div>
+    </div>
+
+    <script>
+        // === CONFIG ===
+        const CONFIG = {
+            particleCount: 300,
+            particleRadius: 4,
+            gravity: 0.3,
+            friction: 0.99,
+            bounce: 0.5,
+            digRadius: 30,
+            digStrength: 2
+        };
+
+        // === SETUP ===
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        const countEl = document.getElementById('count');
+
+        // === PARTICLE CLASS ===
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = 0;
+                this.radius = CONFIG.particleRadius + Math.random() * 2;
+                // Earth tones
+                const hue = 30 + Math.random() * 20;
+                const sat = 40 + Math.random() * 20;
+                const lit = 30 + Math.random() * 20;
+                this.color = `hsl(${hue}, ${sat}%, ${lit}%)`;
+            }
+
+            update() {
+                // Gravity
+                this.vy += CONFIG.gravity;
+
+                // Apply velocity
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Friction
+                this.vx *= CONFIG.friction;
+                this.vy *= CONFIG.friction;
+
+                // Bounds collision
+                if (this.x < this.radius) {
+                    this.x = this.radius;
+                    this.vx *= -CONFIG.bounce;
+                }
+                if (this.x > canvas.width - this.radius) {
+                    this.x = canvas.width - this.radius;
+                    this.vx *= -CONFIG.bounce;
+                }
+                if (this.y > canvas.height - this.radius) {
+                    this.y = canvas.height - this.radius;
+                    this.vy *= -CONFIG.bounce;
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+        }
+
+        // === GAME STATE ===
+        let particles = [];
+        let mouse = { x: 0, y: 0, down: false };
+
+        // === INIT PARTICLES ===
+        function initParticles() {
+            particles = [];
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height * 0.6; // Top 60%
+                particles.push(new Particle(x, y));
+            }
+        }
+
+        // === DIG INTERACTION ===
+        function dig() {
+            if (!mouse.down) return;
+
+            for (const p of particles) {
+                const dx = p.x - mouse.x;
+                const dy = p.y - mouse.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < CONFIG.digRadius && dist > 0) {
+                    const force = (CONFIG.digRadius - dist) / CONFIG.digRadius * CONFIG.digStrength;
+                    p.vx += (dx / dist) * force;
+                    p.vy += (dy / dist) * force;
+                }
+            }
+        }
+
+        // === PARTICLE-PARTICLE COLLISION (simple) ===
+        function resolveCollisions() {
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    const a = particles[i];
+                    const b = particles[j];
+
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const minDist = a.radius + b.radius;
+
+                    if (dist < minDist && dist > 0) {
+                        // Push apart
+                        const overlap = (minDist - dist) / 2;
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+
+                        a.x -= nx * overlap;
+                        a.y -= ny * overlap;
+                        b.x += nx * overlap;
+                        b.y += ny * overlap;
+
+                        // Transfer velocity (simple)
+                        const dvx = a.vx - b.vx;
+                        const dvy = a.vy - b.vy;
+                        const dvn = dvx * nx + dvy * ny;
+
+                        if (dvn > 0) {
+                            a.vx -= dvn * nx * 0.5;
+                            a.vy -= dvn * ny * 0.5;
+                            b.vx += dvn * nx * 0.5;
+                            b.vy += dvn * ny * 0.5;
+                        }
+                    }
+                }
+            }
+        }
+
+        // === DRAW DIG CURSOR ===
+        function drawCursor() {
+            if (mouse.down) {
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, CONFIG.digRadius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        // === GAME LOOP ===
+        function gameLoop() {
+            // Clear
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Dig
+            dig();
+
+            // Update & collide
+            for (const p of particles) {
+                p.update();
+            }
+            resolveCollisions();
+
+            // Draw
+            for (const p of particles) {
+                p.draw();
+            }
+            drawCursor();
+
+            // UI
+            countEl.textContent = particles.length;
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // === EVENTS ===
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            mouse.down = true;
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('mouseup', () => mouse.down = false);
+        canvas.addEventListener('mouseleave', () => mouse.down = false);
+
+        // Touch support
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            mouse.x = touch.clientX - rect.left;
+            mouse.y = touch.clientY - rect.top;
+            mouse.down = true;
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            mouse.x = touch.clientX - rect.left;
+            mouse.y = touch.clientY - rect.top;
+        });
+
+        canvas.addEventListener('touchend', () => mouse.down = false);
+
+        // === START ===
+        initParticles();
+        gameLoop();
+    </script>
+</body>
+</html>
